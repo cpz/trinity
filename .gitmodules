@@ -1,0 +1,16 @@
+[submodule "dependencies/fmt"]
+	path = dependencies/fmt
+	url = https://github.com/fmtlib/fmt
+	ignore = all
+[submodule "dependencies/lazy_importer"]
+	path = dependencies/lazy_importer
+	url = https://github.com/JustasMasiulis/lazy_importer
+	ignore = all
+[submodule "dependencies/WinReg"]
+	path = dependencies/WinReg
+	url = https://github.com/GiovanniDicanio/WinReg
+	ignore = all
+[submodule "dependencies/WinWMI"]
+	path = dependencies/WinWMI
+	url = https://github.com/cpz/WinWMI
+	ignore = all
