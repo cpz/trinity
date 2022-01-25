@@ -1,13 +1,19 @@
 #include "Tools.h"
 
-#include <thread>
 #include <TlHelp32.h>
 
 Tools* g_tools = new Tools();
 
+void Tools::print_error(std::string_view text, int error_number) const
+{
+    fmt::memory_buffer message;
+    fmt::detail::format_windows_error(message, error_number, text.data());
+    message.push_back('\n');
+    fmt::print(fg(fmt::color::crimson) | fmt::emphasis::bold, to_string(message));
+}
+
 uint32_t Tools::GetProccessByName(const std::wstring_view name)
 {
-    // open a system snapshot of all loaded processes
     const Handle snap_shot{CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0), &CloseHandle};
 
     if (snap_shot.get() == INVALID_HANDLE_VALUE)
@@ -15,7 +21,6 @@ uint32_t Tools::GetProccessByName(const std::wstring_view name)
 
     PROCESSENTRY32W process_entry{sizeof(PROCESSENTRY32W)};
 
-    // enumerate through processes
     for (Process32FirstW(snap_shot.get(), &process_entry); Process32NextW(snap_shot.get(), &process_entry);)
         if (std::wcscmp(name.data(), process_entry.szExeFile) == NULL)
             return process_entry.th32ProcessID;
@@ -71,7 +76,6 @@ BOOL Tools::IsRunAsAdmin()
     DWORD dw_error{ERROR_SUCCESS};
     PSID administrators_group{};
 
-    // Allocate and initialize a SID of the administrators group. 
     SID_IDENTIFIER_AUTHORITY nt_authority = SECURITY_NT_AUTHORITY;
     if (!AllocateAndInitializeSid(
         &nt_authority,
@@ -82,8 +86,6 @@ BOOL Tools::IsRunAsAdmin()
         &administrators_group))
         return is_run_as_admin;
 
-    // Determine whether the SID of administrators group is enabled in  
-    // the primary access token of the process. 
     if (!CheckTokenMembership(nullptr, administrators_group, &is_run_as_admin))
         return is_run_as_admin;
 
@@ -99,13 +101,13 @@ BOOL Tools::IsRunAsAdmin()
 BOOL Tools::StartTrustedInstallerService() const
 {
     const SC_HANDLE sch_sc_manager = OpenSCManager(
-        nullptr, // local computer
-        nullptr, // servicesActive database 
-        SC_MANAGER_ALL_ACCESS); // full access rights 
+        nullptr,
+        nullptr,
+        SC_MANAGER_ALL_ACCESS);
 
     if (sch_sc_manager == nullptr)
     {
-        fmt::print(fg(fmt::color::crimson) | fmt::emphasis::bold, "[!] OpenSCManager failed {}\n", GetLastError());
+        print_error("[!] OpenSCManager failed", GetLastError());
         return FALSE;
     }
 
@@ -116,7 +118,7 @@ BOOL Tools::StartTrustedInstallerService() const
 
     if (sch_service == nullptr)
     {
-        fmt::print(fg(fmt::color::crimson) | fmt::emphasis::bold, "[!] OpenService failed {}\n", GetLastError());
+        print_error("[!] OpenService failed", GetLastError());
         CloseServiceHandle(sch_sc_manager);
         return FALSE;
     }
@@ -126,7 +128,7 @@ BOOL Tools::StartTrustedInstallerService() const
         0,
         nullptr) && GetLastError() != ERROR_SERVICE_ALREADY_RUNNING)
     {
-        fmt::print(fg(fmt::color::crimson) | fmt::emphasis::bold, "[1} StartService failed {}\n", GetLastError());
+        print_error("[!] OStartService failed", GetLastError());
         CloseServiceHandle(sch_service);
         CloseServiceHandle(sch_sc_manager);
         return FALSE;
@@ -145,8 +147,7 @@ void Tools::ImpersonateUserByProcessId(const uint32_t pid) const
     if (process_handle.get() != nullptr)
         fmt::print("    [001] Got access to process!\n");
     else
-        throw std::runtime_error(fmt::sprintf("[!] Failed to obtain access to process! Code: {}",
-                                              GetLastError()));
+        throw fmt::windows_error(GetLastError(), "[!] Failed to obtain access to process! Code");
 
     HANDLE token = nullptr;
     BOOL process_token = OpenProcessToken(process_handle.get(), TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY,
@@ -154,13 +155,11 @@ void Tools::ImpersonateUserByProcessId(const uint32_t pid) const
     if (token != nullptr && process_token != FALSE)
         fmt::printf("    [002] Got access to process token!\n");
     else
-        throw std::runtime_error(fmt::sprintf("[!] Failed to obtain access to process token! Code: {}",
-                                              GetLastError()));
+        throw fmt::windows_error(GetLastError(), "[!] Failed to obtain access to process token! Code");
 
     const BOOL impersonate_user = ImpersonateLoggedOnUser(token);
     if (!impersonate_user)
-        throw std::runtime_error(fmt::sprintf("[!] Failed to imperonate user! Code: {}",
-                                              GetLastError()));
+        throw fmt::windows_error(GetLastError(), "[!] Failed to imperonate user! Code");
 
     CloseHandle(token);
 }
@@ -169,10 +168,10 @@ SC_HANDLE Tools::StopService(const std::wstring_view name) const
 {
     SERVICE_STATUS_PROCESS ssp;
 
-    const SC_HANDLE sch_sc_manager = OpenSCManager(
-        nullptr, // local computer
-        nullptr, // ServicesActive database 
-        SC_MANAGER_ALL_ACCESS); // full access rights 
+    const SC_HANDLE sch_sc_manager = OpenSCManagerW(
+        nullptr,
+        nullptr,
+        SC_MANAGER_ALL_ACCESS);
 
     if (sch_sc_manager == nullptr)
     {
@@ -180,26 +179,30 @@ SC_HANDLE Tools::StopService(const std::wstring_view name) const
         return nullptr;
     }
 
-    const SC_HANDLE sch_service = OpenService(
-        sch_sc_manager, // SCM database 
-        name.data(), // name of service 
+    const SC_HANDLE sch_service = OpenServiceW(
+        sch_sc_manager,
+        name.data(),
         SERVICE_STOP |
         SERVICE_QUERY_STATUS |
-        SERVICE_ENUMERATE_DEPENDENTS);
+        SERVICE_ENUMERATE_DEPENDENTS |
+        DELETE);
 
     if (sch_service == nullptr)
     {
-        fmt::print(fg(fmt::color::crimson) | fmt::emphasis::bold, "[!] OpenService failed {}\n", GetLastError());
+        if (const auto error = GetLastError(); error != ERROR_SERVICE_DOES_NOT_EXIST)
+            print_error("[!] OpenService failed", GetLastError());
+
         CloseServiceHandle(sch_sc_manager);
         return nullptr;
     }
 
     if (!ControlService(
-        sch_service,
-        SERVICE_CONTROL_STOP,
-        reinterpret_cast<LPSERVICE_STATUS>(&ssp)))
+            sch_service,
+            SERVICE_CONTROL_STOP,
+            reinterpret_cast<LPSERVICE_STATUS>(&ssp)) &&
+        GetLastError() != ERROR_SERVICE_NOT_ACTIVE)
     {
-        fmt::print(fg(fmt::color::crimson) | fmt::emphasis::bold, "[!] ControlService failed {}\n", GetLastError());
+        print_error("[!] ControlService failed", GetLastError());
         CloseServiceHandle(sch_service);
         CloseServiceHandle(sch_sc_manager);
         return nullptr;
@@ -210,29 +213,32 @@ SC_HANDLE Tools::StopService(const std::wstring_view name) const
 
 BOOL Tools::DeleteDefenderServices() const
 {
-    auto status = TRUE;
+    std::array<std::wstring, 3> services = {
+        L"WinDefend",
+        L"WdFilter",
+        L"WdBoot"
+    };
 
-    const auto windefend_service = StopService(L"WinDefend");
-    const auto wdfilter_service = StopService(L"WdFilter");
-    const auto wdboot_service = StopService(L"WdBoot");
-    const auto security_health = StopService(L"SecurityHealthService");
-
-    if (!DeleteService(windefend_service) &&
-        !DeleteService(wdfilter_service) &&
-        !DeleteService(wdboot_service) &&
-        !DeleteService(security_health))
+    auto status = true;
+    for (auto& service : services)
     {
-        fmt::print(fg(fmt::color::crimson) | fmt::emphasis::bold, "[!] DeleteService failed {}\n", GetLastError());
-        status = false;
+        const auto service_handle = StopService(service.data());
+        if (service_handle == nullptr)
+            continue;
+
+        if (!DeleteService(service_handle))
+        {
+            print_error("[!] DeleteService failed", GetLastError());
+            status = false;
+        }
+
+        CloseServiceHandle(service_handle);
     }
 
-    CloseServiceHandle(windefend_service);
-    CloseServiceHandle(wdfilter_service);
-    CloseServiceHandle(wdboot_service);
     return status;
 }
 
-int Tools::DisableElamDrivers(void) const
+HRESULT Tools::DisableElamDrivers(void) const
 {
     IWbemServices* p_svc = nullptr;
     IWbemLocator* p_bem_location = nullptr;

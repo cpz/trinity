@@ -3,6 +3,8 @@
 
 #include <windows.h>
 #include <thread>
+#include <array>
+#include <unordered_map>
 
 #pragma region LazyImporter
 #include <include/lazy_importer.hpp>

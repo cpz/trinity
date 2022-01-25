@@ -43,7 +43,7 @@ bool Remove()
 
         g_tools->ImpersonateUserByProcessId(trustedinstaller_pid);
     }
-    catch (std::runtime_error& err)
+    catch (std::exception& err)
     {
         fmt::print(fg(fmt::color::crimson) | fmt::emphasis::bold, err.what());
         return false;
@@ -68,37 +68,46 @@ bool Remove()
         fmt::print(L"   [01] Windows Defender Computer ID: {}\n",
                    win_wmi->get(L"ComputerID").value_or(L"Failed to retrieve ComputerID"));
 
-        win_wmi->set<BOOL>(L"DisableRealtimeMonitoring", WmiType::kBool, TRUE);
-        win_wmi->set<BOOL>(L"DisableBehaviorMonitoring", WmiType::kBool, TRUE);
-        win_wmi->set<BOOL>(L"DisableBlockAtFirstSeen", WmiType::kBool, TRUE);
-        win_wmi->set<BOOL>(L"DisableIOAVProtection", WmiType::kBool, TRUE);
-        win_wmi->set<BOOL>(L"DisablePrivacyMode", WmiType::kBool, TRUE);
-        win_wmi->set<BOOL>(L"SignatureDisableUpdateOnStartupWithoutEngine", WmiType::kBool, TRUE);
-        win_wmi->set<BOOL>(L"DisableArchiveScanning", WmiType::kBool, TRUE);
-        win_wmi->set<BOOL>(L"DisableIntrusionPreventionSystem", WmiType::kBool, TRUE);
-        win_wmi->set<BOOL>(L"DisableScriptScanning", WmiType::kBool, TRUE);
-        win_wmi->set<BOOL>(L"DisableAntiSpyware", WmiType::kBool, TRUE);
-        win_wmi->set<BOOL>(L"DisableAntiVirus", WmiType::kBool, TRUE);
+        std::array<std::wstring_view, 11> defender_bool_names = {
+            L"DisableRealtimeMonitoring",
+            L"DisableBehaviorMonitoring",
+            L"DisableBlockAtFirstSeen",
+            L"DisableIOAVProtection",
+            L"DisablePrivacyMode",
+            L"SignatureDisableUpdateOnStartupWithoutEngine",
+            L"DisableArchiveScanning",
+            L"DisableIntrusionPreventionSystem",
+            L"DisableScriptScanning",
+            L"DisableAntiSpyware",
+            L"DisableAntiVirus"
+        };
 
-        win_wmi->set<uint8_t>(L"PUAProtection", WmiType::kUint8, 0);
-        win_wmi->set<uint8_t>(L"EnableControlledFolderAccess", WmiType::kUint8, 0);
-        win_wmi->set<uint8_t>(L"SubmitSamplesConsent", WmiType::kUint8, 2);
-        win_wmi->set<uint8_t>(L"MAPSReporting", WmiType::kUint8, 0);
-        win_wmi->set<uint8_t>(L"HighThreatDefaultAction", WmiType::kUint8, 6);
-        win_wmi->set<uint8_t>(L"ModerateThreatDefaultAction", WmiType::kUint8, 6);
-        win_wmi->set<uint8_t>(L"LowThreatDefaultAction", WmiType::kUint8, 6);
-        win_wmi->set<uint8_t>(L"SevereThreatDefaultAction", WmiType::kUint8, 6);
-        win_wmi->set<uint8_t>(L"ScanScheduleDay", WmiType::kUint8, 8);
+        for (const auto& name : defender_bool_names)
+            if (!win_wmi->set<BOOL>(name.data(), WmiType::kBool, TRUE))
+                fmt::print(L"    [?] Failed to set {} to true (YOU CAN IGNORE THIS!)\n", name);
+
+        std::unordered_map<std::wstring_view, uint8_t> defender_uint_values = {
+            {L"PUAProtection", 0},
+            {L"EnableControlledFolderAccess", 0},
+            {L"SubmitSamplesConsent", 2},
+            {L"MAPSReporting", 0},
+            {L"HighThreatDefaultAction", 6},
+            {L"ModerateThreatDefaultAction", 6},
+            {L"LowThreatDefaultAction", 6},
+            {L"SevereThreatDefaultAction", 6},
+            {L"ScanScheduleDay", 8},
+        };
+
+        for (const auto& [name, value] : defender_uint_values)
+            if (!win_wmi->set<uint8_t>(name.data(), WmiType::kUint8, value))
+                fmt::print(L"    [?] Failed to set {} to {} (YOU CAN IGNORE THIS!)\n", name, value);
 
         fmt::print("   [02] Successfuly disabled Windows Defender in WMI!\n");
     }
 
     if (const auto result = g_tools->DisableElamDrivers(); result != S_OK)
-    {
-        fmt::print(fg(fmt::color::crimson) | fmt::emphasis::bold, "[!] Failed to disable elam drivers. Code: {}\n",
+        fmt::print(fg(fmt::color::crimson) | fmt::emphasis::bold, "[!] Failed to disable elam drivers. Code: {0:X}\n",
                    result);
-        return false;
-    }
 
     if (!g_tools->DeleteDefenderServices())
     {
@@ -124,6 +133,12 @@ bool Remove()
         winreg::RegKey defender{HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\Windows Defender"};
         defender.SetDwordValue(L"DisableRealtimeMonitoring", 1);
         fmt::print("[11] Real-time monitoring was disabled!\n");
+    }
+
+    {
+        winreg::RegKey defender{HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services\\SecurityHealthService"};
+        defender.SetDwordValue(L"Start", 4);
+        fmt::print("[12] Security Health Service was disabled!\n");
     }
 
     return true;

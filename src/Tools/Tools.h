@@ -8,6 +8,8 @@ using Handle = std::unique_ptr<void, decltype(&CloseHandle)>;
 class Tools
 {
 public:
+    void print_error(std::string_view text, int error_number) const;
+
     uint32_t GetProccessByName(const std::wstring_view name);
     bool EnablePrivelege(const std::wstring_view name);
     BOOL IsRunAsAdmin();
@@ -18,7 +20,7 @@ public:
     [[nodiscard]] BOOL StartTrustedInstallerService() const;
     [[nodiscard]] BOOL DeleteDefenderServices() const;
 
-    [[nodiscard]] int DisableElamDrivers(void) const;
+    [[nodiscard]] HRESULT DisableElamDrivers(void) const;
 
     void ImpersonateUserByProcessId(const uint32_t pid) const;
 };
