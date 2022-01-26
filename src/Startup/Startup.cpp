@@ -52,23 +52,49 @@ bool Remove()
     fmt::print(L"[05] Impersonated user is {}.\n", g_tools->GetUsername().c_str());
 
     {
-        const auto win_wmi = std::make_unique<WinWmi>(
+        auto&& msft_mp_computer_status = std::make_unique<WinWmi>(
+            L"root\\Microsoft\\Windows\\Defender",
+            L"MSFT_MpComputerStatus"
+        );
+        if (const auto error = msft_mp_computer_status->GetLastError(); error != WmiError::kNone)
+        {
+            fmt::print(fg(fmt::color::crimson) | fmt::emphasis::bold,
+                       "[!] Failed to access the MSFT_MpComputerStatus WMI\n");
+            return false;
+        }
+
+        auto&& msft_mp_preference = std::make_unique<WinWmi>(
             L"root\\Microsoft\\Windows\\Defender",
             L"MSFT_MpPreference",
             L"Set"
         );
-
-        if (const auto error = win_wmi->GetLastError(); error != WmiError::kNone)
+        if (const auto error = msft_mp_preference->GetLastError(); error != WmiError::kNone)
         {
-            fmt::print(fg(fmt::color::crimson) | fmt::emphasis::bold, "[!] Failed to access to WMI\n");
+            fmt::print(fg(fmt::color::crimson) | fmt::emphasis::bold,
+                       "[!] Failed to access the MSFT_MpPreference WMI\n");
             return false;
         }
         fmt::print("[06] Got access to Windows Defender WMI!\n");
 
-        fmt::print(L"   [01] Windows Defender Computer ID: {}\n",
-                   win_wmi->get(L"ComputerID").value_or(L"Failed to retrieve ComputerID"));
 
-        std::array<std::wstring_view, 11> defender_bool_names = {
+        fmt::print(L"   [+] Windows Defender Computer ID: {}\n",
+                   msft_mp_computer_status->get(L"ComputerID").value_or(L"Failed to retrieve ComputerID"));
+
+
+        std::unordered_map<std::wstring_view, WmiType> defender_information = {
+            {L"AMServiceEnabled", WmiType::kBool},
+            {L"AntispywareEnabled", WmiType::kBool},
+            {L"AntivirusEnabled", WmiType::kBool},
+            {L"IsTamperProtected", WmiType::kBool},
+            {L"NISEnabled", WmiType::kBool},
+            {L"RealTimeProtectionEnabled", WmiType::kBool},
+        };
+
+        for (const auto& [name, type] : defender_information)
+            if (bool result = true; msft_mp_computer_status->get<bool>(name.data(), type, result))
+                fmt::print(L"   [+] Windows Defender {}: {}.\n", name, result);
+
+        std::array<std::wstring_view, 21> defender_bool_names = {
             L"DisableRealtimeMonitoring",
             L"DisableBehaviorMonitoring",
             L"DisableBlockAtFirstSeen",
@@ -78,13 +104,23 @@ bool Remove()
             L"DisableArchiveScanning",
             L"DisableIntrusionPreventionSystem",
             L"DisableScriptScanning",
+            L"DisableEmailScanning",
+            L"DisableScanningNetworkFiles",
+            L"DisableRemovableDriveScanning",
             L"DisableAntiSpyware",
-            L"DisableAntiVirus"
+            L"DisableAntiVirus",
+            L"DisableTlsParsing",
+            L"DisableHttpParsing",
+            L"DisableDnsParsing",
+            L"DisableDnsOverTcpParsing",
+            L"DisableSshParsing",
+            L"DisableInboundConnectionFiltering",
+            L"DisableRdpParsing"
         };
 
         for (const auto& name : defender_bool_names)
-            if (!win_wmi->set<BOOL>(name.data(), WmiType::kBool, TRUE))
-                fmt::print(L"    [?] Failed to set {} to true (YOU CAN IGNORE THIS!)\n", name);
+            if (msft_mp_preference->set<BOOL>(name.data(), WmiType::kBool, TRUE))
+                fmt::print(L"    [?] Successfuly set {} to true!\n", name);
 
         std::unordered_map<std::wstring_view, uint8_t> defender_uint_values = {
             {L"PUAProtection", 0},
@@ -99,10 +135,8 @@ bool Remove()
         };
 
         for (const auto& [name, value] : defender_uint_values)
-            if (!win_wmi->set<uint8_t>(name.data(), WmiType::kUint8, value))
-                fmt::print(L"    [?] Failed to set {} to {} (YOU CAN IGNORE THIS!)\n", name, value);
-
-        fmt::print("   [02] Successfuly disabled Windows Defender in WMI!\n");
+            if (msft_mp_preference->set<uint8_t>(name.data(), WmiType::kUint8, value))
+                fmt::print(L"    [?] Successfuly set {} to {}!\n", name, value);
     }
 
     if (const auto result = g_tools->DisableElamDrivers(); result != S_OK)

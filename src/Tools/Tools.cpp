@@ -145,7 +145,7 @@ void Tools::ImpersonateUserByProcessId(const uint32_t pid) const
 {
     const Handle process_handle{OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid), &CloseHandle};
     if (process_handle.get() != nullptr)
-        fmt::print("    [001] Got access to process!\n");
+        fmt::print("   [+] Got access to process!\n");
     else
         throw fmt::windows_error(GetLastError(), "[!] Failed to obtain access to process! Code");
 
@@ -153,7 +153,7 @@ void Tools::ImpersonateUserByProcessId(const uint32_t pid) const
     BOOL process_token = OpenProcessToken(process_handle.get(), TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY,
                                           &token);
     if (token != nullptr && process_token != FALSE)
-        fmt::printf("    [002] Got access to process token!\n");
+        fmt::printf("   [+] Got access to process token!\n");
     else
         throw fmt::windows_error(GetLastError(), "[!] Failed to obtain access to process token! Code");
 
