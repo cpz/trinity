@@ -1,6 +1,11 @@
 #include "Tools.h"
 
 #include <TlHelp32.h>
+#include <filesystem>
+#include <accctrl.h>
+#include <aclapi.h>
+#include <objbase.h>
+#include <strsafe.h>
 
 Tools* g_tools = new Tools();
 
@@ -249,8 +254,9 @@ HRESULT Tools::DisableElamDrivers(void) const
 
     hres = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(hres))
+    {
         return hres;
-
+    }
     hres = CoInitializeSecurity(
         nullptr,
         -1,
@@ -263,7 +269,7 @@ HRESULT Tools::DisableElamDrivers(void) const
         nullptr
     );
 
-    if (FAILED(hres))
+    if (FAILED(hres) && hres != RPC_E_TOO_LATE)
     {
         CoUninitialize();
         return hres;
@@ -467,4 +473,212 @@ HRESULT Tools::DisableElamDrivers(void) const
     VariantClear(&param_type);
 
     return S_OK;
+}
+
+bool Tools::BcdEditDisableElamDrivers() const
+{
+    STARTUPINFOW si = {0};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi = {0};
+    DWORD exit_code;
+
+    HANDLE token_handle = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY, &token_handle))
+        return false;
+
+    const std::unique_ptr<wchar_t[]> system_directory(new wchar_t[MAX_PATH]);
+    GetSystemDirectoryW(system_directory.get(), MAX_PATH);
+
+    std::wstring bcdedit_path(system_directory.get());
+    bcdedit_path.append(L"\\bcdedit.exe");
+
+    if (!std::filesystem::exists(bcdedit_path))
+        return false;
+
+    if (!CreateProcessAsUserW(token_handle,
+                              bcdedit_path.c_str(),
+                              L"bcdedit /set disableelamdrivers true",
+                              nullptr,
+                              nullptr,
+                              FALSE,
+                              0,
+                              nullptr,
+                              nullptr,
+                              &si,
+                              &pi))
+    {
+        print_error("[!] CreateProccessAsUser failed", GetLastError());
+        return false;
+    }
+
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    GetExitCodeProcess(pi.hProcess, &exit_code);
+
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+
+    if (exit_code != EXIT_SUCCESS)
+        return false;
+
+    return true;
+}
+
+bool Tools::InitializeComSecurity()
+{
+    SECURITY_DESCRIPTOR security_desc = {0};
+    EXPLICIT_ACCESS ea[5] = {0};
+
+    PACL acl = {};
+    std::unique_ptr<std::remove_pointer<PACL>::type,
+                    decltype(&LocalFree)> acl_guard(acl, &LocalFree);
+
+    std::vector<PSID> rg_sid = {};
+
+    BOOL ret = InitializeSecurityDescriptor(&security_desc, SECURITY_DESCRIPTOR_REVISION);
+    if (!ret)
+        return false;
+
+    std::array<WELL_KNOWN_SID_TYPE, 5> sids_id = {
+        WinBuiltinAdministratorsSid,
+        WinLocalServiceSid,
+        WinNetworkServiceSid,
+        WinSelfSid,
+        WinLocalSystemSid
+    };
+
+    for (const auto& id : sids_id)
+    {
+        ULONGLONG sid[(SECURITY_MAX_SID_SIZE + sizeof(ULONGLONG) - 1) / sizeof(ULONGLONG)] = {0};
+        DWORD cb_sid = sizeof(sid);
+        ret = CreateWellKnownSid(id, nullptr, sid, &cb_sid);
+        if (!ret)
+            return false;
+
+        rg_sid.emplace_back(sid);
+    }
+
+    for (auto i = 0; i < 5; i++)
+    {
+        ea[i].grfAccessPermissions = COM_RIGHTS_EXECUTE | COM_RIGHTS_EXECUTE_LOCAL;
+        ea[i].grfAccessMode = SET_ACCESS;
+        ea[i].grfInheritance = NO_INHERITANCE;
+        ea[i].Trustee.pMultipleTrustee = nullptr;
+        ea[i].Trustee.MultipleTrusteeOperation = NO_MULTIPLE_TRUSTEE;
+        ea[i].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+        ea[i].Trustee.TrusteeType = TRUSTEE_IS_GROUP;
+        ea[i].Trustee.ptstrName = static_cast<LPTSTR>(rg_sid.at(i));
+    }
+
+    // Create an access control list (ACL) using this ACE list.
+    const auto dw_ret = SetEntriesInAclW(ARRAYSIZE(ea), ea, nullptr, &acl);
+    if (dw_ret != ERROR_SUCCESS || acl == nullptr)
+        if (!ret)
+            return false;
+
+    ret = SetSecurityDescriptorOwner(&security_desc, rg_sid.at(0), FALSE);
+    if (!ret)
+        return false;
+
+    ret = SetSecurityDescriptorGroup(&security_desc, rg_sid.at(0), FALSE);
+    if (!ret)
+        return false;
+
+    ret = SetSecurityDescriptorDacl(&security_desc, TRUE, acl, FALSE);
+    if (!ret)
+        return false;
+
+    const auto hr_ret = CoInitializeSecurity(&security_desc,
+                                             -1,
+                                             nullptr,
+                                             nullptr,
+                                             RPC_C_AUTHN_LEVEL_PKT_PRIVACY,
+                                             RPC_C_IMP_LEVEL_IDENTIFY,
+                                             nullptr,
+                                             EOAC_DISABLE_AAA | EOAC_NO_CUSTOM_MARSHAL,
+                                             nullptr);
+    if (FAILED(hr_ret))
+        return false;
+
+    return true;
+}
+
+bool Tools::InitializeRestorePoint(void)
+{
+    if (const auto hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED); FAILED(hr))
+        return false;
+
+    auto ret = InitializeComSecurity();
+    if (!ret)
+        return false;
+
+    restore_pt_info_.dwEventType = BEGIN_SYSTEM_CHANGE;
+    restore_pt_info_.dwRestorePtType = APPLICATION_INSTALL;
+    restore_pt_info_.llSequenceNumber = 0;
+
+    StringCbCopyW(restore_pt_info_.szDescription,
+                  sizeof(restore_pt_info_.szDescription),
+                  L"T R I N I T Y [WINDOWS DEFENDER REMOVER]");
+
+    h_sr_client_ = LoadLibraryW(L"srclient.dll");
+    if (h_sr_client_ == nullptr)
+    {
+        fmt::print(fg(fmt::color::crimson) | fmt::emphasis::bold, "[!] System Restore is not present!\n");
+        return false;
+    }
+
+    sr_set_restore_point_w_ = reinterpret_cast<SetRestorePointtW>(
+        GetProcAddress(h_sr_client_, "SRSetRestorePointW"));
+    if (sr_set_restore_point_w_ == nullptr)
+    {
+        fmt::print(fg(fmt::color::crimson) | fmt::emphasis::bold, "[!] Failed to find SRSetRestorePointW.\n");
+        return false;
+    }
+
+    ret = sr_set_restore_point_w_(&restore_pt_info_, &s_mgr_status_);
+    if (!ret)
+    {
+        const auto status = s_mgr_status_.nStatus;
+        if (status == ERROR_SERVICE_DISABLED)
+        {
+            fmt::print(fg(fmt::color::crimson) | fmt::emphasis::bold, "[!] Failed to find SRSetRestorePointW.\n");
+            return false;
+        }
+
+        print_error("[!] Failure to create the restore point", status);
+        return false;
+    }
+
+    return true;
+}
+
+bool Tools::FinishRestorePoint(bool status)
+{
+    if (status)
+    {
+        restore_pt_info_.dwEventType = END_SYSTEM_CHANGE;
+        restore_pt_info_.llSequenceNumber = s_mgr_status_.llSequenceNumber;
+        const auto ret = sr_set_restore_point_w_(&restore_pt_info_, &s_mgr_status_);
+        if (!ret)
+        {
+            const auto n_status = s_mgr_status_.nStatus;
+            print_error("[!] Failure to end the restore point", n_status);
+            return false;
+        }
+    }
+    else
+    {
+        restore_pt_info_.dwEventType = END_SYSTEM_CHANGE;
+        restore_pt_info_.dwRestorePtType = CANCELLED_OPERATION;
+        restore_pt_info_.llSequenceNumber = s_mgr_status_.llSequenceNumber;
+        const auto ret = sr_set_restore_point_w_(&restore_pt_info_, &s_mgr_status_);
+        if (!ret)
+        {
+            const auto n_status = s_mgr_status_.nStatus;
+            print_error("[!] Failure to cancel the restore point", n_status);
+            return false;
+        }
+    }
+
+    FreeLibrary(h_sr_client_);
+    return true;
 }

@@ -16,6 +16,7 @@ workspace "trinity"
   IncludeDir["fmt"] = "dependencies/fmt/include"
   IncludeDir["WinReg"] = "dependencies/WinReg/WinReg"
   IncludeDir["WinWMI"] = "dependencies/WinWMI/include"
+  IncludeDir["args"] = "dependencies/args"
   
   CppVersion = "C++17"
   MsvcToolset = "v142"
@@ -98,6 +99,7 @@ workspace "trinity"
 	    "%{IncludeDir.lazyImporter}",
       "%{IncludeDir.WinReg}",
       "%{IncludeDir.WinWMI}",
+      "%{IncludeDir.args}",
       "src"
     }
 

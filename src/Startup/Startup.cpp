@@ -140,8 +140,13 @@ bool Remove()
     }
 
     if (const auto result = g_tools->DisableElamDrivers(); result != S_OK)
+    {
         fmt::print(fg(fmt::color::crimson) | fmt::emphasis::bold, "[!] Failed to disable elam drivers. Code: {0:X}\n",
                    result);
+
+        if (g_tools->BcdEditDisableElamDrivers())
+            fmt::print("[07] Succesfully disabled elam drivers!\n");
+    }
 
     if (!g_tools->DeleteDefenderServices())
     {
