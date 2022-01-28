@@ -15,6 +15,17 @@
 
 _Strictly for educational purposes_.
 
+## Options
+```
+  trinity {OPTIONS}
+
+  OPTIONS:
+
+      -h, --help                        Display this help menu
+      -s, --system-restore              Create system restore point before
+                                        removing defender
+```
+
 ## Building
 
 To build project you need:
